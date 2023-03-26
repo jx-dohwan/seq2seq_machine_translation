@@ -139,18 +139,18 @@ class Decoder(nn.Module):
         # embed_layer에 거쳐서 word_emb_vec와 입력으로 들어옴
 
 
-class Generator(nn.Module):
+class Generator(nn.Module): # 학습할때는 모든 time_step를 한번에 통과 추론할때는 하나씩 통과
 
     def __init__(self, hidden_size, output_size):
         super(Generator, self).__init__()
 
-        self.output = nn.Linear(hidden_size, output_size)
-        self.softmax = nn.LogSoftmax(dim=-1)
+        self.output = nn.Linear(hidden_size, output_size) # linear로 softmax를 씌울 수 있도록 변환
+        self.softmax = nn.LogSoftmax(dim=-1) # log 확률을 뱉어내도록 한다. output 사이즈 dm에 대해 동작하도록 선언함함
 
     def forward(self, x):
         # |x| = (batch_size, length, hidden_size)
 
-        y = self.softmax(self.output(x))
+        y = self.softmax(self.output(x)) 
         # |y| = (batch_size, length, output_size)
 
         # Return log-probability instead of just probability.
@@ -190,55 +190,67 @@ class Seq2Seq(nn.Module):
         )
         self.attn = Attention(hidden_size)
 
-        self.concat = nn.Linear(hidden_size * 2, hidden_size)
+        # attention cv와 decoder의 현재 타임스텝 output을 concat해서 h_tilde를 만들어야 된다.
+        # concat하는 입력을 받아서 hidden_size로 바꿔주는 레이어를 만들고
+        # 거기에 씌워줄 tanh를 선언
+        # 그리고 generator h_dilte를 받을거니 hidden_size를 받아서 taget의 단어장 사이즈로 바꾸준다.
+        self.concat = nn.Linear(hidden_size * 2, hidden_size) 
         self.tanh = nn.Tanh()
         self.generator = Generator(hidden_size, output_size)
 
+    # |length| = (bs,)
     def generate_mask(self, x, length):
         mask = []
 
         max_length = max(length)
         for l in length:
-            if max_length - l > 0:
+            if max_length - l > 0: # 가장 긴 길이가 아닐경우우
                 # If the length is shorter than maximum length among samples, 
                 # set last few values to be 1s to remove attention weight.
-                mask += [torch.cat([x.new_ones(1, l).zero_(),
-                                    x.new_ones(1, (max_length - l))
-                                    ], dim=-1)]
+                mask += [torch.cat([x.new_ones(1, l).zero_(), # 필요한만큼 0으로
+                                    x.new_ones(1, (max_length - l)) # 남은 것을 1로 채워준다.
+                                    ], dim=-1)] # 이것을 concat한다. -1 차원에서서
             else:
                 # If the length of the sample equals to maximum length among samples, 
                 # set every value in mask to be 0.
-                mask += [x.new_ones(1, l).zero_()]
+                mask += [x.new_ones(1, l).zero_()] # 0으로 꽉채움움
 
-        mask = torch.cat(mask, dim=0).bool()
+        mask = torch.cat(mask, dim=0).bool() # 각각의 것을 만들고 나면 리스트를 0차원에 대해서 cat한다. 그리고 bool으로 선언언
 
-        return mask
+        return mask # x와 tensor와 lenth가 주어졌을때 pad의 모양으로 mask를 만들 수
 
+    # encoder hiddens를 받아서 decoder hiddens로 치환하는 것이다.
     def merge_encoder_hiddens(self, encoder_hiddens):
         new_hiddens = []
         new_cells = []
 
+        # |hiddens| = (Nlayers * 2, bs, hs/2)
         hiddens, cells = encoder_hiddens
 
         # i-th and (i+1)-th layer is opposite direction.
         # Also, each direction of layer is half hidden size.
         # Therefore, we concatenate both directions to 1 hidden size layer.
-        for i in range(0, hiddens.size(0), 2):
-            new_hiddens += [torch.cat([hiddens[i], hiddens[i + 1]], dim=-1)]
+        for i in range(0, hiddens.size(0), 2): # Nlayer * 2를 두칸씩 띄워서서
+            # 0,1 concat 2,3concat 4,5concat (hs에 대해서)
+            # (bs, hs/2)인 상태에 X 2로 되어있을 것이다. 즉 (bs,hs)가 된다.
+            # X 2인 이유는 2칸씩 띄워서일까?
+            new_hiddens += [torch.cat([hiddens[i], hiddens[i + 1]], dim=-1)] 
             new_cells += [torch.cat([cells[i], cells[i + 1]], dim=-1)]
 
+        # stack을 하게 되면 Nlayers, bs, hs로 나오게 된다.
         new_hiddens, new_cells = torch.stack(new_hiddens), torch.stack(new_cells)
 
         return (new_hiddens, new_cells)
 
     def fast_merge_encoder_hiddens(self, encoder_hiddens):
         # Merge bidirectional to uni-directional
-        # We need to convert size from (n_layers * 2, batch_size, hidden_size / 2)
+        # We need to convert size from (n_layers * 2, batch_size, hidden_size / 2) 이거를 바로 아래모양처럼 만들어야 한다.
         # to (n_layers, batch_size, hidden_size).
         # Thus, the converting operation will not working with just 'view' method.
         h_0_tgt, c_0_tgt = encoder_hiddens
         batch_size = h_0_tgt.size(1)
-
+        # |h0 tgt| = (Nlayer*2, bs , hs/2) -> transpose후 (bs, Nlayers*2, hs/2) -> view를 해주면 (bs, Nlayer, hs) -> transpose후 (Nlayers, bs, hs)
+        # 왜 바로 view하지 않고 transpose를 두번했을까? view로 바로 못바꿀 것이다. shape는 나올 것이지만 안에 구성이 이상하게 바꾸니다.
         h_0_tgt = h_0_tgt.transpose(0, 1).contiguous().view(batch_size,
                                                             -1,
                                                             self.hidden_size
@@ -255,6 +267,10 @@ class Seq2Seq(nn.Module):
         # |h_0_tgt| = (n_layers, batch_size, hidden_size)
         return h_0_tgt, c_0_tgt
 
+    # |src| = (bs, n) ≈ (bs, n, |Vsrc|) ≈는 근사함
+    # |tgt| = (bs, m) ≈ (bs, m, |Vtgt|)
+    # |output| = (bs, m, |Vtgt|)
+    
     def forward(self, src, tgt):
         batch_size = tgt.size(0)
 
@@ -278,49 +294,58 @@ class Seq2Seq(nn.Module):
 
         # The last hidden state of the encoder would be a initial hidden state of decoder.
         h_src, h_0_tgt = self.encoder((emb_src, x_length))
-        # |h_src| = (batch_size, length, hidden_size)
-        # |h_0_tgt| = (n_layers * 2, batch_size, hidden_size / 2)
+        # |h_src| = (batch_size, length, hidden_size) --> 인코더의 전체 타임스텝 마지막레이어의 hs
+        # |h_0_tgt| = (n_layers * 2, batch_size, hidden_size / 2) --> 인코더의 마지막 타임스텝의 전체 레이어의 hs
 
         h_0_tgt = self.fast_merge_encoder_hiddens(h_0_tgt)
-        emb_tgt = self.emb_dec(tgt)
+        emb_tgt = self.emb_dec(tgt) # 정답을 한꺼번에 emb_vecter로 만들어줌
         # |emb_tgt| = (batch_size, length, word_vec_size)
         h_tilde = []
 
-        h_t_tilde = None
-        decoder_hidden = h_0_tgt
+        h_t_tilde = None # 첫번째 time_step이므로 이전 tiem_step은 None
+        decoder_hidden = h_0_tgt # 이전의 decoder의 hs는 encoder의 마지막 hs로 만들었다. 
         # Run decoder until the end of the time-step.
-        for t in range(tgt.size(1)):
+        for t in range(tgt.size(1)): # target의 길이만큼 for문을 돈다.
             # Teacher Forcing: take each input from training set,
             # not from the last time-step's output.
             # Because of Teacher Forcing,
             # training procedure and inference procedure becomes different.
             # Of course, because of sequential running in decoder,
             # this causes severe bottle-neck.
-            emb_t = emb_tgt[:, t, :].unsqueeze(1)
+            # bs와 wvs다 가져오고 length는 t번째 가져옴
+            # unsqueeze(1)을 해서 타임스텝을 만들어줬다.
+            emb_t = emb_tgt[:, t, :].unsqueeze(1) 
             # |emb_t| = (batch_size, 1, word_vec_size)
-            # |h_t_tilde| = (batch_size, 1, hidden_size)
+            # |h_t_tilde| = (batch_size, 1, hidden_size) # 이전 타임스텝의 h_tilde
 
-            decoder_output, decoder_hidden = self.decoder(emb_t,
-                                                          h_t_tilde,
-                                                          decoder_hidden
+            # 현재 타임스텝의 출력, 현재 타임스텝의 hs, cs의 튜플
+            decoder_output, decoder_hidden = self.decoder(emb_t, # 현재 타임스텝의 ev
+                                                          h_t_tilde, # 지난 타임스텝의 h_tilde
+                                                          decoder_hidden # 지난 타임스텝의 hs, cs의 튜플플
                                                           )
             # |decoder_output| = (batch_size, 1, hidden_size)
             # |decoder_hidden| = (n_layers, batch_size, hidden_size)
 
-            context_vector = self.attn(h_src, decoder_output, mask)
+            context_vector = self.attn(h_src, decoder_output, mask) # 인코더의 전체 타임스텝의 output과 마스크를 넣는다. 
             # |context_vector| = (batch_size, 1, hidden_size)
 
-            h_t_tilde = self.tanh(self.concat(torch.cat([decoder_output,
+            # concat layer에 넣기 전에 합친다.
+            # [(bs, 1, hs), (bs, 1, hs)]의 -1 dim
+            # (bs, 1 hs*2)
+            # concat layer를 선언할때 hs*2를 입력으로 받도록했다.
+            # 출력은 hs를 뱉는다.
+            # tanh를 씌운다.
+            h_t_tilde = self.tanh(self.concat(torch.cat([decoder_output, 
                                                          context_vector
                                                          ], dim=-1)))
             # |h_t_tilde| = (batch_size, 1, hidden_size)
 
             h_tilde += [h_t_tilde]
 
-        h_tilde = torch.cat(h_tilde, dim=1)
+        h_tilde = torch.cat(h_tilde, dim=1) # for문돌아서 1차원 즉 1 -> (bs,m,hs)
         # |h_tilde| = (batch_size, length, hidden_size)
 
-        y_hat = self.generator(h_tilde)
+        y_hat = self.generator(h_tilde) # 한번에 통과
         # |y_hat| = (batch_size, length, output_size)
 
         return y_hat
