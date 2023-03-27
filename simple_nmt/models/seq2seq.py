@@ -444,9 +444,9 @@ class Seq2Seq(nn.Module):
         boards = [SingleBeamSearchBoard(
             h_src.device,
             {
-                'hidden_state': {
-                    'init_status': h_0_tgt[0][:, i, :].unsqueeze(1),
-                    'batch_dim_index': 1,
+                'hidden_state': { 
+                    'init_status': h_0_tgt[0][:, i, :].unsqueeze(1), # 3차원에서 2차원이되니 unsqueeze(1)을해서 다시 3차원으로 만듦
+                    'batch_dim_index': 1, #배치의 dim은 1번이다.
                 }, # |hidden_state| = (n_layers, batch_size, hidden_size)
                 'cell_state': {
                     'init_status': h_0_tgt[1][:, i, :].unsqueeze(1),
@@ -459,9 +459,10 @@ class Seq2Seq(nn.Module):
             },
             beam_size=beam_size,
             max_length=max_length,
-        ) for i in range(batch_size)]
-        is_done = [board.is_done() for board in boards]
-
+        ) for i in range(batch_size)] # bs 갯수만큼 SingleBeamSearchBoard를 초기화한다.샘플별?
+        is_done = [board.is_done() for board in boards] # 각 샘플별 done count
+        # 이걸 done_cnt로 하거나 serach에 done_cnt를 is_done로해야되는거 아닌가? 일단 강의 끝까지 들어봐야됨
+        # seq2seq에서는 done_cat이지만 transformer에서는 is_done일 가능성이 가장 높음 염두에 두고 학습해야함
         length = 0
         # Run loop while sum of 'is_done' is smaller than batch_size, 
         # or length is still smaller than max_length.
@@ -477,9 +478,9 @@ class Seq2Seq(nn.Module):
             
             # Build fabricated mini-batch in non-parallel way.
             # This may cause a bottle-neck.
-            for i, board in enumerate(boards):
+            for i, board in enumerate(boards): # 각 샘플별 board에서 
                 # Batchify if the inference for the sample is still not finished.
-                if board.is_done() == 0:
+                if board.is_done() == 0: # 디코딩이 안끝났다고 하면 가져온다.
                     y_hat_i, prev_status = board.get_batch()
                     hidden_i    = prev_status['hidden_state']
                     cell_i      = prev_status['cell_state']
@@ -488,6 +489,7 @@ class Seq2Seq(nn.Module):
                     fab_input  += [y_hat_i]
                     fab_hidden += [hidden_i]
                     fab_cell   += [cell_i]
+                    # beam size 곱해주면 된다. 밑에거  
                     fab_h_src  += [h_src[i, :, :]] * beam_size
                     fab_mask   += [mask[i, :]] * beam_size
                     if h_t_tilde_i is not None:
