@@ -351,7 +351,7 @@ class Seq2Seq(nn.Module):
         return y_hat
 
     def search(self, src, is_greedy=True, max_length=255):
-        if isinstance(src, tuple):
+        if isinstance(src, tuple): # ped seq 다루는 부분
             x, x_length = src
             mask = self.generate_mask(x, x_length)
         else:
@@ -360,11 +360,16 @@ class Seq2Seq(nn.Module):
         batch_size = x.size(0)
 
         # Same procedure as teacher forcing.
+        # encoder는 양방향, 디코더는 한방향 그래서 shape가 안맞는 경우가 생간다.
+        # 그래서 그것을 해결하기 위해서 merge encoder hiddens를 만들었다. shape 을 맞춰준다.
         emb_src = self.emb_src(x)
         h_src, h_0_tgt = self.encoder((emb_src, x_length))
         decoder_hidden = self.fast_merge_encoder_hiddens(h_0_tgt)
 
         # Fill a vector, which has 'batch_size' dimension, with BOS value.
+        # 생성해야되니 BOS가 있어야함
+        # x랑 같은 텐서 타입의 디바이스를 만드는데 x를 제로로 해주고, 
+        # 여기에 bos를 더하면 bos 토큰이 되는 것이다.
         y = x.new(batch_size, 1).zero_() + data_loader.BOS
 
         is_decoding = x.new_ones(batch_size, 1).bool()
@@ -372,7 +377,7 @@ class Seq2Seq(nn.Module):
         
         # Repeat a loop while sum of 'is_decoding' flag is bigger than 0,
         # or current time-step is smaller than maximum length.
-        while is_decoding.sum() > 0 and len(indice) < max_length:
+        while is_decoding.sum() > 0 and len(indice) < max_length: # 하나라도 디코딩하면 계속돈다. 그리고 max_length보다 작은동안안
             # Unlike training procedure,
             # take the last time-step's output during the inference.
             emb_t = self.emb_dec(y)
@@ -389,18 +394,18 @@ class Seq2Seq(nn.Module):
             # |y_hat| = (batch_size, 1, output_size)
             y_hats += [y_hat]
 
-            if is_greedy:
+            if is_greedy: # 그리디라면 가장 좋은 것을 뽑아라라
                 y = y_hat.argmax(dim=-1)
                 # |y| = (batch_size, 1)
-            else:
+            else: # 랜덤을 할것이면
                 # Take a random sampling based on the multinoulli distribution.
                 y = torch.multinomial(y_hat.exp().view(batch_size, -1), 1)
                 # |y| = (batch_size, 1)
 
             # Put PAD if the sample is done.
-            y = y.masked_fill_(~is_decoding, data_loader.PAD)
+            y = y.masked_fill_(~is_decoding, data_loader.PAD) # is_decoding가 false면 의미없는 작업이었고 pad다./이전타임스텝에 EOS가 나왔을경우
             # Update is_decoding if there is EOS token.
-            is_decoding = is_decoding * torch.ne(y, data_loader.EOS)
+            is_decoding = is_decoding * torch.ne(y, data_loader.EOS) # 이번 타임스텝에 EOs가 나온경우/ 안나왓을경우 true 나오면 false 이것을 곱한다. and 연산자르 거는 것것
             # |is_decoding| = (batch_size, 1)
             indice += [y]
 
